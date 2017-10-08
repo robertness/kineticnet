@@ -1,0 +1,4 @@
+"0","post_hist('b_egfr_sos', fit, params[['b_egfr_sos']])
+post_hist('b_igfr_sos', fit, params[['b_igfr_sos']])
+"
+"0","post_pred('sos', fit, .data[['sos']])"

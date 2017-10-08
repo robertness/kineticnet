@@ -1,0 +1,116 @@
+---
+title: "Steady-state inference of the Bianconi signaling pathway model with Stan"
+author: "Robert Ness"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, echo=FALSE, results='asis'}
+library(kineticnet)
+options(mc.cores = parallel::detectCores())
+```
+
+In this vignette, values are simulated from the [Bianconi model IGFR and EGFR signaling](https://www.ebi.ac.uk/biomodels-main/BIOMD0000000427).  
+
+This assumes the system has reached steady-state.  For each reaction affecting a given protein, the target parameter is 
+\begin{align}
+\beta = \frac{\nu/Km}{\alpha}
+\end{align}
+$\nu$ and $Km$ is the forward rate and Michaelis-Menton constant of the reaction.  $\alpha$ is either the rate parameter for auto-deactivation, the value of $\nu/Km$ for one specific inhibiting reaction.  Generally, $\beta$ can be interpreted as a the impact of a reaction on a protein, relative to a baseline $\alpha$.
+
+## Simulation
+
+The $\beta$ parameters:
+
+```{r set_beta}
+params <- list(
+  b_egfr_sos = 0.0006351333, # (694.731 / 6.08607e+06)/(161197/896896)
+  b_igfr_sos = 0.02781, # (500 / 100000)/(161197/896896)
+  b_egfr_pi3k =  0.01154463, #(10.6737/184912)/(.005)
+  b_igf1_pi3k =  0.01154463, #(10.6737/184912)/(.005)
+  b_sos_ras =   0.8537238, #(32.344 / 35954.3)/(1509.36/1.43241e+06)
+  b_ras_pi3k =  0.00006, 
+  b_pi3k_akt =  0.00002, 
+  b_akt_raf = 1.06475,  
+  b_ras_raf =  1.415355e-05, 
+  b_raf_mek =  7.13481,
+  b_mek_erk =  0.00001
+)
+```
+
+Forward simulating values based on these parameter values.
+
+```{r}
+names <- c('egfr', 'igfr', 'sos', 'ras', 'pi3k', 'akt', 'rasgap', 'rafpp', 'raf', 'mek', 'pp2a', 'erk', 'p90')
+attach(params)
+
+# Functions corresponding to steady-state solution of ODEs
+g1 <- function(x) x / (1 + x)
+g2 <- function(x1, x2) x1 / (1 + x1 + x2)
+sim <- function(x) rpois(N, x) # Used to simulate inhibitors.
+
+.data <- expand.grid(exp(seq(1, 13, by = 1)), 
+            exp(seq(1, 13, by = .2))) %>% # Scan values for igfr and egfr
+  set_names(c("igfr", "egfr"))%>%
+  as_tibble
+N <- nrow(.data)
+
+.data <- .data %>%
+  mutate(p90 = runif(N, 0, 120000),
+         sos = sim(120000 * g2(b_egfr_sos * egfr + b_igfr_sos * igfr, p90)),
+         rasgap = runif(N, 0, 120000),
+         ras = sim(120000 * g2(b_sos_ras * sos, rasgap)),
+         pi3k = sim(120000 * g1(b_egfr_pi3k * egfr + b_igf1_pi3k * igfr + b_ras_pi3k * ras)),
+         akt = sim(600000 * g1(b_pi3k_akt * pi3k)),
+         rafpp = runif(N, 0, 120000),
+         raf = sim(120000 * g2(b_ras_raf * ras, rafpp + b_akt_raf * akt)),
+         pp2a = runif(N, 0, 120000), 
+         mek = sim(600000 * g2(b_raf_mek * raf, pp2a)), 
+         erk = sim(600000 * g2(b_mek_erk * mek, pp2a))
+  )
+```
+
+## Parameter Inference
+
+```{r}
+model_file <- system.file("stan", "bianconi.stan", package = "kineticnet")
+mod <- stan_model(file = model_file)
+stan_data <- c(.data, N = list(N))
+fit <- vb(mod, stan_data)
+```
+
+Plotting the results:
+
+
+```{r}
+post_hist('b_egfr_sos', fit, params[['b_egfr_sos']])
+post_hist('b_igfr_sos', fit, params[['b_igfr_sos']])
+post_pred('sos', fit, .data[['sos']])
+
+
+post_hist('b_sos_ras', fit, params[['b_sos_ras']])
+post_pred('ras', fit, .data[['ras']])
+
+post_hist('b_egfr_pi3k', fit, params[['b_egfr_pi3k']])
+post_pred('pi3k', fit, .data[['pi3k']])
+
+post_hist('b_pi3k_akt', fit, params[['b_pi3k_akt']])
+post_pred('akt', fit, .data[['akt']])
+
+post_hist('b_akt_raf', fit, params[['b_akt_raf']])
+post_hist('b_ras_raf', fit, params[['b_ras_raf']])
+post_pred('raf', fit, .data[['raf']])
+
+post_hist('b_raf_mek', fit, params[['b_raf_mek']])
+post_pred('mek', fit, .data[['mek']])
+
+post_hist('b_mek_erk', fit, params[['b_mek_erk']])
+post_pred('erk', fit, .data[['erk']])
+```
+
+
+older model [here](https://gist.github.com/robertness/2fe98bf45ad59baea0b12bb104be6943)

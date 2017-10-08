@@ -1,0 +1,8 @@
+"0",".data <- expand.grid(exp(seq(1, 13, by = 1)), 
+            exp(seq(1, 13, by = .2))) %>% # Scan values for igfr and egfr
+  set_names(c(""igfr"", ""egfr""))%>%
+  as_tibble
+"
+"2","Error in expand.grid(exp(seq(1, 13, by = 1)), exp(seq(1, 13, by = 0.2))) %>%  : 
+  could not find function ""%>%""
+"

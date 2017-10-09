@@ -17,9 +17,9 @@ options(mc.cores = parallel::detectCores())
 In this vignette, values are simulated from the [Bianconi model IGFR and EGFR signaling](https://www.ebi.ac.uk/biomodels-main/BIOMD0000000427).  
 
 This assumes the system has reached steady-state.  For each reaction affecting a given protein, the target parameter is 
-\begin{align}
+$$
 \beta = \frac{\nu/Km}{\alpha}
-\end{align}
+$$
 $\nu$ and $Km$ is the forward rate and Michaelis-Menton constant of the reaction.  $\alpha$ is either the rate parameter for auto-deactivation, the value of $\nu/Km$ for one specific inhibiting reaction.  Generally, $\beta$ can be interpreted as a the impact of a reaction on a protein, relative to a baseline $\alpha$.
 
 ## Simulation

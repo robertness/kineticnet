@@ -1,0 +1,306 @@
+// (local-set-key (kbd "s-r") (lambda () (interactive) (save-buffer) (process-send-string "*shell cell-dynamics*" "echo '\n'; webppl cell-dynamics.wppl\n")))
+
+var _map = function(x, f) { return map(f, x) }
+var _mapObject = function(x, f) { return mapObject(f, x) }
+var _reduce = function(arr, init, f) { return reduce(f, init, arr) }
+
+var dot = function(xs, ys) {
+  return sum(map2(function(x, y) { return x * y }, xs, ys))
+}
+
+var topologyToEdges = function(network) {
+  var x = _mapObject(
+    network,
+    function(k,v) {
+      var e1 = _map(v.activates || [],
+                    function(activated) { return {from: k, to: activated, type: 'activation'} });
+      var e2 = _map(v.inhibits || [],
+                    function(inhibited) { return {from: k, to: inhibited, type: 'inhibition'} });
+
+      return e1.concat(e2)
+
+    });
+  return _.chain(x).values().flatten().value();
+}
+
+var bianconi = {
+  edges: topologyToEdges({
+    egf   : {activates : ['sos', 'pi3k']},
+    igf   : {activates : ['sos', 'pi3k']},
+    sos   : {activates : ['ras']},
+    rasgap: {inhibits: ['ras']},
+    ras   : {activates : ['pi3k', 'raf']},
+    pi3k  : {activates : ['akt']},
+    rafpp : {inhibits  : ['raf']},
+    raf   : {activates : ['mek']},
+    akt   : {inhibits  : ['raf']},
+    p90   : {inhibits  : ['sos']},
+    mek   : {activates : ['erk']},
+    pp2a  : {inhibits  : ['mek','erk']}//,
+    // for now, work with acyclic network
+    //  erk: {activates: ['p90']}
+  }),
+  betas: [
+    {from :"egf",to  :"sos",type  :"activation",value :0.00064},
+    {from :"igf",to  :"sos",type  :"activation",value :0.02781},
+    {from :"egf",to  :"pi3k",type :"activation",value :0.01154},
+    {from :"igf",to  :"pi3k",type :"activation",value :0.01154},
+    {from :"sos",to  :"ras",type  :"activation",value :0.85625},
+    {from :"ras",to  :"pi3k",type :"activation",value :0.00006},
+    {from :"pi3k",to :"akt",type  :"activation",value :0.00002},
+    {from :"akt",to  :"raf",type  :"inhibition",value :1.06475},
+    {from :"ras",to  :"raf",type  :"activation",value :1e-05},
+    {from :"raf",to  :"mek",type  :"activation",value :7.13481},
+    {from :"mek",to  :"erk",type  :"activation",value :3.84675}//,
+    //{from :"erk",to  :"p90",type  :"activation",value :1e-05}
+  ],
+  totalCounts: {
+    egf   : 120000,
+    igf   : 120000,
+    sos   : 120000,
+    rasgap: 120000,
+    ras   : 120000,
+    pi3k  : 120000,
+    rafpp : 120000,
+    raf   : 120000,
+    akt   : 600000,
+    p90   : 120000,
+    mek   : 600000,
+    pp2a  : 120000,
+    erk   : 600000
+  }
+}
+
+var getNodes = function(edges) {
+  var froms = _.map(edges, 'from'),
+      tos = _.map(edges, 'to');
+  return _.uniq(froms.concat(tos));
+}
+
+var getParents = function(networkEdges, node) {
+  return _.chain(networkEdges)
+    .filter({to: node})
+    .map('from')
+    .value()
+}
+
+var sortNodes = function(network) {
+  var nodes = network.nodes,
+      edges = network.edges;
+
+  var parentsOf = function(node) {
+    return getParents(edges, node)
+  }
+
+  // poor man's topological sort
+  // depth of a node is the length of the longest path from it to a parent-less ancestor
+  var getNodeDepth = dp.cache(function(node) {
+    var parents = parentsOf(node);
+    if (parents.length == 0) {
+      return 0
+    } else {
+      return 1 + _.max(_map(parents, getNodeDepth))
+    }
+  });
+  var nodeDepths = _map(nodes, getNodeDepth)
+
+  var nodesSorted = _.chain(nodes)
+      .zip(nodeDepths)
+      .sortBy('1')
+      .map('0')
+      .value();
+
+  return nodesSorted
+}
+
+_.extend(bianconi, {nodes: getNodes(bianconi.edges)})
+// NB: sort nodes (mutates). also, reverse sorted for reducing
+_.extend(bianconi, {nodes: sortNodes(bianconi).reverse()})
+
+var activeParticlesDist = function(args) {
+  var t = args.t,
+      betas = args.betas,
+      node = args.node,
+      parentCounts = args.parentCounts,
+      N = args.N;
+
+  if (betas.length == 0) {
+    return Uniform({a: 0, b: N});
+  }
+
+  var activators = _.chain(betas).filter({type: 'activation'}).map('from').value();
+  var inhibitors = _.chain(betas).filter({type: 'inhibition'}).map('from').value();
+
+  var activatorCounts = _.chain(parentCounts).pick(activators).values().value();
+  var inhibitorCounts = _.chain(parentCounts).pick(inhibitors).values().value();
+
+  var activatorRates = _.chain(betas).filter({type: 'activation'}).map('value').value();
+  var inhibitorRates = _.chain(betas).filter({type: 'inhibition'}).map('value').value();
+
+
+  var activationInfluence = dot(activatorCounts, activatorRates),
+      inhibitionInfluence = dot(inhibitorRates, inhibitorRates),
+      totalInfluence = activationInfluence + inhibitionInfluence;
+
+  // the t == Infinity check is required to make gradients happy for HMC
+  var timeVaryingComponent = t == Infinity ? 0 : Math.exp(-t * totalInfluence),
+      timeInvariantComponent = activationInfluence / totalInfluence;
+
+  var p = timeVaryingComponent + timeInvariantComponent;
+
+  return Binomial({n: N, p: p > 1 ? 1 : p});
+}
+
+var sampleActiveParticles = function(args) {
+  var d = activeParticlesDist(args);
+  return Math.floor(sample(d));
+}
+
+var simulateData = function(network, t) {
+  var nodes = network.nodes,
+      edges = network.edges,
+      betas = network.betas,
+      totalCounts = network.totalCounts;
+
+  var parentsOf = function(node) {
+    return getParents(edges, node)
+  }
+
+  return _reduce(
+    nodes,
+    {},
+    function(node, acc) {
+      var parents = parentsOf(node);
+      var nodeBetas =  _map(
+        parents,
+        function(parent) {
+          var entry = _.find(betas, {from: parent, to: node}) || {from: parent, to: node, value: 1, type: 'inhibition'};
+          return entry
+        })
+
+      var count = sampleActiveParticles({t: t,
+                                        node: node,
+                                        betas: nodeBetas,
+                                        parentCounts: acc,
+                                        N: totalCounts[node]
+                                        });
+      console.log(node, count);
+
+      return extend(acc,
+                    _.fromPairs([[node, count]]));
+    }
+  )
+}
+// display(simulateData(bianconi, Infinity))
+// process.exit()
+
+
+var scoreData = function(network, t, observedCounts) {
+  var nodes = network.nodes,
+      edges = network.edges,
+      betas = network.betas,
+      totalCounts = network.totalCounts;
+
+  var parentsOf = function(node) {
+    return getParents(edges, node)
+  }
+
+  return _reduce(
+    nodes,
+    0,
+    function(node, acc) {
+      var parents = parentsOf(node);
+      var nodeBetas =  _map(
+        parents,
+        function(parent) {
+          var entry = _.find(betas, {from: parent, to: node}) || {from: parent, to: node, value: 1, type: 'inhibition'};
+          return entry
+        })
+
+      var dist = activeParticlesDist({t: t,
+                                      node: node,
+                                      betas: nodeBetas,
+                                      parentCounts: observedCounts,
+                                      N: totalCounts[node]
+                                     });
+      var score = dist.score(observedCounts[node]);
+      //console.log(node, score)
+
+      return acc + score;
+    }
+  )
+}
+
+
+// fitting to equilibrium data
+util.seedRNG(1);
+var observedData = simulateData(bianconi, Infinity);
+// display(observedData);
+// process.exit()
+// console.log(observedData);
+
+var marg = Infer({
+  method: 'incrementalMH',
+  //kernel: 'HMC',
+  samples: 1000,
+  verbose: true,
+  model: function() {
+    var betas = _map(
+      bianconi.betas,
+      function(entry) {
+        var trueValue = entry.value;
+        return extend(entry,
+                      {value: sample(Uniform({a: 0.8 * trueValue,
+                                              b: 1.5 * trueValue}))
+                      })
+      });
+
+    // score a
+    var network = extend(bianconi,
+                         {betas: betas})
+
+    factor(scoreData(network, Infinity, observedData));
+    return betas[0].value;
+  }
+});
+
+expectation(marg)
+process.exit()
+
+// expectation(marg);
+
+// fit to time series data
+var observedTimeData = map(
+  function(t) {
+    return [t, sample(sampleActiveParticles(t,
+                                          [[10],[4]],
+                                          [[0.5],[0.3]],
+                                          100
+                                         ))]
+  },
+  [0,1,2,3,4,5,6,7,8,9,10]) // TODO: sample some true data using the gillespie algorithm
+
+
+
+
+var X = function() {
+  return uniformDraw([['sos', 'egf', 'igf', 'p90'],
+                      ['mek','pp2a']])
+}
+
+var Y = function(nodes) {
+  return map(function(node) { return uniform(0, 100) },
+             nodes)
+}
+
+// oed: selecting different tuples to do time series experiments on
+var M = function() {
+  var beta0 = sample(Uniform({a: 0, b: 5}));
+  var betas = [[beta0], [1]];
+
+  // x is a set of nodes to do a time course experiment on
+  // y is a set of concentration measurements for each node
+  var m = Model(beta0 + '', function(x, y) {
+
+  })
+}
